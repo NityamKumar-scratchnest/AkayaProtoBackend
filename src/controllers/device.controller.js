@@ -1,134 +1,73 @@
 import Device from '../models/device.model.js';
 import DeviceSettings from '../models/device-settings.model.js';
-import mongoose from 'mongoose';
-import { createCursorFromDoc, parseCursor } from '../utils/pagination.js';
+// Removed mongoose import as it's not strictly necessary for this pagination logic,
+// and the provided pagination utilities were for cursor-based.
+// Removed unused imports from the original file if they are not used anywhere else
+// in the provided code snippet.
+// import mongoose from 'mongoose'; // Not directly used in new pagination logic
+// import { createCursorFromDoc, parseCursor } from '../utils/pagination.js'; // Not used with page-based pagination
 
-// function createCursorFromDoc(doc) {
-//   return Buffer.from(
-//     JSON.stringify({
-//       createdAt: doc.createdAt.toISOString(),
-//       id: doc._id.toString()
-//     })
-//   ).toString("base64");
-// }
-
-// function parseCursor(cursor) {
-//   try {
-//     const decoded = JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
-//     return {
-//       createdAt: new Date(decoded.createdAt),
-//       id: decoded.id
-//     };
-//   } catch (err) {
-//     return { createdAt: new Date("invalid"), id: null };
-//   }
-// }
-
+/**
+ * Lists devices with traditional page-based pagination, search, and returns
+ * total records and total pages.
+ *
+ * @param {object} req - Express request object (expects req.query.page, req.query.limit, req.query.q).
+ * @param {object} res - Express response object.
+ * @param {function} next - Express next middleware function.
+ */
 export async function listDevices(req, res, next) {
   try {
-    const limit = Math.min(Number(req.query.limit || 30), 100);
-    const q = (req.query.q || "").trim();
-    const cursor = req.query.cursor;
-    const prevCursor = req.query.prevCursor;
-    const filter = {};
+    // Parse pagination parameters with default values
+    const page = parseInt(req.query.page, 10) || 1; // Default to page 1
+    const limit = parseInt(req.query.limit, 10) || 20; // Default to 20 items per page
+    const skip = (page - 1) * limit; // Calculate how many documents to skip
 
-    // Helpers
-    function createCursorFromDoc(doc) {
-      return Buffer.from(
-        JSON.stringify({
-          createdAt: doc.createdAt.toISOString(),
-          id: doc._id.toString()
-        })
-      ).toString("base64");
-    }
+    const q = (req.query.q || "").trim(); // Get search query
 
-    function parseCursor(cursorStr) {
-      const decoded = JSON.parse(
-        Buffer.from(cursorStr, "base64").toString("utf8")
-      );
-      return {
-        createdAt: new Date(decoded.createdAt),
-        id: new mongoose.Types.ObjectId(decoded.id)
-      };
-    }
+    const filter = {}; // Initialize filter object
 
-    // Search filter
+    // Apply search filter if 'q' is provided
     if (q) {
+      // Create a case-insensitive regex for searching payload or name
       const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
       filter.$or = [{ payload: regex }, { name: regex }];
     }
 
-    // Forward pagination
-    if (cursor && !prevCursor) {
-      const { createdAt, id } = parseCursor(cursor);
-      if (isNaN(createdAt.getTime()) || !id) {
-        return res.status(400).json({ message: "Invalid cursor" });
-      }
-      filter.$and = [
-        {
-          $or: [
-            { createdAt: { $lt: createdAt } },
-            { $and: [{ createdAt }, { _id: { $lt: id } }] }
-          ]
-        }
-      ];
-    }
+    // Get the total number of documents matching the filter
+    // This is crucial for calculating total pages and showing total records
+    const totalRecords = await Device.countDocuments(filter);
 
-    // Backward pagination
-    if (prevCursor && !cursor) {
-      const { createdAt, id } = parseCursor(prevCursor);
-      if (isNaN(createdAt.getTime()) || !id) {
-        return res.status(400).json({ message: "Invalid prevCursor" });
-      }
-      filter.$and = [
-        {
-          $or: [
-            { createdAt: { $gt: createdAt } },
-            { $and: [{ createdAt }, { _id: { $gt: id } }] }
-          ]
-        }
-      ];
-    }
+    // Fetch devices for the current page
+    const devices = await Device.find(filter)
+      .sort({ createdAt: -1, _id: -1 }) // Sort by creation date (desc) and then _id (desc) for consistent ordering
+      .skip(skip) // Skip documents for previous pages
+      .limit(limit); // Limit to the number of items per page
 
-    // Determine sort direction
-    const sortOrder =
-      prevCursor && !cursor ? { createdAt: 1, _id: 1 } : { createdAt: -1, _id: -1 };
+    // Calculate total pages
+    const totalPages = Math.ceil(totalRecords / limit);
 
-    let docs = await Device.find(filter)
-      .sort(sortOrder)
-      .limit(limit + 1);
+    // Send the paginated data and metadata in the response
+    res.json({
+      data: devices,        // The array of devices for the current page
+      currentPage: page,    // The current page number
+      totalPages: totalPages, // The total number of pages
+      totalRecords: totalRecords // The total number of records across all pages
+    });
 
-    // If going backward, reverse the results so they're in the right order
-    if (prevCursor && !cursor) {
-      docs = docs.reverse();
-    }
-
-    // Generate cursors
-    let nextCursorOut = null;
-    let prevCursorOut = null;
-
-    if (docs.length > limit) {
-      if (prevCursor && !cursor) {
-        // When going backward, extra doc is at start
-        prevCursorOut = createCursorFromDoc(docs[0]);
-        docs.splice(0, 1);
-      } else {
-        // When going forward, extra doc is at end
-        nextCursorOut = createCursorFromDoc(docs[limit]);
-        docs.splice(limit);
-      }
-    }
-
-    if (docs.length > 0) {
-      prevCursorOut = prevCursorOut || createCursorFromDoc(docs[0]);
-      nextCursorOut = nextCursorOut || createCursorFromDoc(docs[docs.length - 1]);
-    }
-
-    res.json({ data: docs, nextCursor: nextCursorOut, prevCursor: prevCursorOut });
   } catch (err) {
+    // Pass any errors to the Express error handling middleware
     next(err);
   }
 }
+
+/**
+ * Fetches a single device and its settings by payload.
+ * This function remains unchanged.
+ *
+ * @param {object} req - Express request object.
+ * @param {object} res - Express response object.
+ * @param {function} next - Express next middleware function.
+ */
 export async function getDevice(req, res, next) {
   try {
     const { payload } = req.params;
@@ -142,7 +81,14 @@ export async function getDevice(req, res, next) {
   }
 }
 
-
+/**
+ * Adds a new device to the database.
+ * This function remains unchanged.
+ *
+ * @param {object} req - Express request object.
+ * @param {object} res - Express response object.
+ * @param {function} next - Express next middleware function.
+ */
 export async function addNewDevice(req, res, next) {
   try {
     const { payload, name, model, secretKey } = req.body;
@@ -171,4 +117,4 @@ export async function addNewDevice(req, res, next) {
   } catch (error) {
     next(error);
   }
-} 
+}

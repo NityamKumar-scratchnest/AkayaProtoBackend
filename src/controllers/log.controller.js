@@ -1,38 +1,71 @@
 import SensorLog from '../models/sensor-log.model.js';
-import mongoose from 'mongoose';
+// Removed mongoose import as it's not strictly needed for traditional pagination ObjectId conversion here.
 
+/**
+ * Fetches sensor logs for a specific device with pagination and date filtering.
+ *
+ * This function now uses 'page' and 'limit' for traditional pagination,
+ * and also returns total records and total pages for client-side display.
+ *
+ * @param {object} req - Express request object.
+ * @param {object} res - Express response object.
+ * @param {function} next - Express next middleware function.
+ */
 export async function getLogsForDevice(req, res, next) {
   try {
     const { payload } = req.params;
-    const limit = Math.min(Number(req.query.limit || 500), 5000);
+
+    // Parse pagination parameters with default values
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20; // Default limit to 20 items per page
+    const skip = (page - 1) * limit; // Calculate how many documents to skip
+
+    // Parse date filters with default values
+    // 'from' defaults to the beginning of time if not provided
     const from = req.query.from ? new Date(req.query.from) : new Date(0);
+    // 'to' defaults to the current date if not provided
     const to = req.query.to ? new Date(req.query.to) : new Date();
-    const cursor = req.query.cursor;
 
-    const filter = { devicePayload: payload, timestamp: { $gte: from, $lte: to } };
+    // Base filter for the device payload and timestamp range
+    const filter = {
+      devicePayload: payload,
+      timestamp: { $gte: from, $lte: to }
+    };
 
-    if (cursor) {
-      const [tsStr, id] = cursor.split('::');
-      const ts = new Date(tsStr);
-      filter.$and = [
-        { $or: [{ timestamp: { $lt: ts } }, { $and: [{ timestamp: ts }, { _id: { $lt: mongoose.Types.ObjectId(id) } }] }] }
-      ];
-    }
+    // Get the total number of documents matching the filter
+    const totalRecords = await SensorLog.countDocuments(filter);
 
-    const logs = await SensorLog.find(filter).sort({ timestamp: -1, _id: -1 }).limit(limit + 1);
-    let nextCursor = null;
-    if (logs.length > limit) {
-      const last = logs[limit - 1];
-      nextCursor = `${last.timestamp.toISOString()}::${last._id}`;
-      logs.splice(limit);
-    }
+    // Fetch the logs for the current page
+    const logs = await SensorLog.find(filter)
+      .sort({ timestamp: -1, _id: -1 }) // Sort by timestamp (desc) and then _id (desc) for consistent ordering
+      .skip(skip) // Skip documents for previous pages
+      .limit(limit); // Limit to the number of items per page
 
-    res.json({ data: logs, nextCursor });
+    // Calculate total pages
+    const totalPages = Math.ceil(totalRecords / limit);
+
+    // Send the paginated data and metadata in the response
+    res.json({
+      data: logs,
+      currentPage: page,
+      totalPages: totalPages,
+      totalRecords: totalRecords
+    });
+
   } catch (err) {
+    // Pass any errors to the error handling middleware
     next(err);
   }
 }
 
+/**
+ * Fetches aggregated chart data for a specific device based on hours.
+ * This function remains unchanged as it's for chart data, not table pagination.
+ *
+ * @param {object} req - Express request object.
+ * @param {object} res - Express response object.
+ * @param {function} next - Express next middleware function.
+ */
 export async function chartForDevice(req, res, next) {
   try {
     const { payload } = req.params;
